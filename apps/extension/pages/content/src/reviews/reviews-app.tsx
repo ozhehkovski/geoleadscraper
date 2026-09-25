@@ -9,6 +9,7 @@ import {
   logger,
   mergeGoogleMapsReviews,
   parseGoogleMapsReview,
+  parseGoogleMapsReviewsFromDom,
   randomize,
   sendBackgroundEvent,
   sleep,
@@ -25,7 +26,13 @@ import { config } from '@chrome-extension/shared';
 
 import { ContentContext, IContentContextState } from '@/context';
 import { Layout } from '@/layout';
-import { getPlaceTitle, openReviewsTab, scrollReviewsToEnd, sortReviewsByNewest } from './google-maps-dom';
+import {
+  expandTruncatedReviews,
+  getPlaceTitle,
+  openReviewsTab,
+  scrollReviewsToEnd,
+  sortReviewsByNewest,
+} from './google-maps-dom';
 import { getReceivedReviewsPages, subscribeToReviewsPages } from './reviews-store';
 
 type Status = 'idle' | 'collecting' | 'paused' | 'completed';
@@ -75,7 +82,6 @@ export const ReviewsApp = () => {
   });
 
   const reviewsRef = useRef<IGoogleMapsReview[]>([]);
-  const pagesSeenRef = useRef(0);
   const lastPageReachedRef = useRef(false);
   const runningRef = useRef(false);
   const collectingRef = useRef(false);
@@ -83,13 +89,23 @@ export const ReviewsApp = () => {
   // Read lazily: the SPA updates the document title after this widget mounts.
   const getPlaceName = (): string => getPlaceTitle() || getGoogleMapsPlaceName(document.location.href);
 
+  // Reviews rendered in the list. Opening a place straight on its Reviews
+  // tab renders the first pages without any network call we could observe,
+  // so the DOM is the source that always has them.
+  const addRenderedReviews = () => {
+    expandTruncatedReviews();
+
+    const parsed = parseGoogleMapsReviewsFromDom(document, { placeId: placeId || '', placeName: getPlaceName() });
+    reviewsRef.current = mergeGoogleMapsReviews(reviewsRef.current, parsed).slice(0, config.EXTRACT_LIMIT);
+    setCount(reviewsRef.current.length);
+  };
+
   const addPage = (page: IGoogleMapsReviewsPage) => {
     const parsed = page.reviews
       .map(raw => parseGoogleMapsReview(raw, { placeId: page.placeId, placeName: getPlaceName() }))
       .filter((review): review is IGoogleMapsReview => review !== null);
 
     reviewsRef.current = mergeGoogleMapsReviews(reviewsRef.current, parsed).slice(0, config.EXTRACT_LIMIT);
-    pagesSeenRef.current += 1;
     if (page.nextToken === null) lastPageReachedRef.current = true;
     setCount(reviewsRef.current.length);
   };
@@ -136,23 +152,32 @@ export const ReviewsApp = () => {
     let idle = 0;
 
     while (runningRef.current) {
-      if (lastPageReachedRef.current || reviewsRef.current.length >= config.EXTRACT_LIMIT) {
+      addRenderedReviews();
+
+      if (reviewsRef.current.length >= config.EXTRACT_LIMIT) {
         await complete();
         return;
       }
 
-      const before = pagesSeenRef.current;
+      const before = reviewsRef.current.length;
       scrollReviewsToEnd();
 
+      // Wait for the next page: either a response we observed or new rows
+      // rendered into the list.
       const deadline = Date.now() + PAGE_TIMEOUT_MS;
-      while (runningRef.current && pagesSeenRef.current === before && Date.now() < deadline) {
-        await sleep(250);
+      while (runningRef.current && Date.now() < deadline) {
+        await sleep(500);
+        addRenderedReviews();
+        if (reviewsRef.current.length > before) break;
       }
 
       if (!runningRef.current) return;
 
-      idle = pagesSeenRef.current === before ? idle + 1 : 0;
-      if (idle >= MAX_IDLE_ATTEMPTS) {
+      idle = reviewsRef.current.length > before ? 0 : idle + 1;
+
+      // Maps told us this was the last page — one quiet round is enough.
+      const limit = lastPageReachedRef.current ? 1 : MAX_IDLE_ATTEMPTS;
+      if (idle >= limit) {
         await complete();
         return;
       }
@@ -167,7 +192,6 @@ export const ReviewsApp = () => {
 
       setError(null);
       reviewsRef.current = [];
-      pagesSeenRef.current = 0;
       lastPageReachedRef.current = false;
       collectingRef.current = true;
       setCount(0);
@@ -205,7 +229,6 @@ export const ReviewsApp = () => {
       runningRef.current = false;
       collectingRef.current = false;
       reviewsRef.current = [];
-      pagesSeenRef.current = 0;
       lastPageReachedRef.current = false;
       setCount(0);
       setError(null);

@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@chrome-extension/tsconfig": "workspace:*",
+    "@types/jsdom": "^30.0.0",
     "vitest": "^3"
   },
   "dependencies": {

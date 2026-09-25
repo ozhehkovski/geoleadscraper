@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,8 @@ import {
   isGoogleMapsPlaceUrl,
   mergeGoogleMapsReviews,
   parseGoogleMapsReview,
+  parseGoogleMapsReviewElement,
+  parseGoogleMapsReviewsFromDom,
   parseReviewsBatchResponse,
   type IGoogleMapsReview,
 } from './reviews';
@@ -188,6 +191,7 @@ describe('parseGoogleMapsReview', () => {
       photos_count: 2,
       owner_response: 'Dziękujemy!',
       owner_response_at: new Date(1781156427000).toISOString(),
+      owner_response_relative_date: '3 months ago',
       review_url: 'https://www.google.com/maps/reviews/data=abc',
     });
   });
@@ -213,5 +217,127 @@ describe('mergeGoogleMapsReviews', () => {
     const b = parseGoogleMapsReview(buildRawReview('b')) as IGoogleMapsReview;
 
     expect(mergeGoogleMapsReviews([a], [a, b]).map(review => review.review_id)).toEqual(['a', 'b']);
+  });
+});
+
+// Markup mirroring the rendered Maps reviews list (class names and all).
+const buildReviewMarkup = (id: string, { owner = false, photos = 0, clamped = false } = {}) => `
+  <div data-review-id="${id}" class="jftiEf">
+    <div class="jJc9Ad">
+      <button class="WEBjve" data-review-id="${id}"><img class="NBa7we" src="https://lh3.googleusercontent.com/a/${id}"></button>
+      <div class="GHT2ce">
+        <button data-href="https://www.google.com/maps/contrib/117700000000000000001/reviews"><div class="d4r55">Jan Kowalski</div></button>
+        <div class="RfnDt">Local Guide · 12 reviews · 3 photos</div>
+      </div>
+      <div class="GHT2ce">
+        <div class="DU9Pgb">
+          <span class="kvMYJc" role="img" aria-label="5 stars"></span>
+          <span class="rsqaWe">5 months ago</span>
+        </div>
+        <div>
+          <div class="MyEned" lang="pl"><span class="wiI7pd">Świetna obsługa</span></div>
+          ${clamped ? '<button class="w8nwRe">More</button>' : ''}
+        </div>
+        ${Array.from({ length: photos })
+          .map(
+            (_, i) =>
+              `<button class="Tya61d" style="background-image: url(&quot;https://lh3.googleusercontent.com/photo-${i}&quot;);"></button>`,
+          )
+          .join('')}
+        ${
+          owner
+            ? `<div class="CDe7pd">
+                 <span class="fontTitleSmall">Response from the owner</span>
+                 <span class="DZSIDd">4 months ago</span>
+                 <div class="wiI7pd">Dziękujemy!</div>
+               </div>`
+            : ''
+        }
+      </div>
+    </div>
+  </div>`;
+
+const domRoot = (html: string) => new JSDOM(`<div id="list">${html}</div>`).window.document.getElementById('list')!;
+
+describe('parseGoogleMapsReviewElement', () => {
+  it('reads a rendered review', () => {
+    const root = domRoot(buildReviewMarkup('dom-1', { owner: true, photos: 2 }));
+    const review = parseGoogleMapsReviewElement(root.querySelector('[data-review-id]')!, {
+      placeId: PLACE_ID,
+      placeName: 'Meble.pl',
+    });
+
+    expect(review).toMatchObject({
+      review_id: 'dom-1',
+      place_id: PLACE_ID,
+      place_name: 'Meble.pl',
+      author_name: 'Jan Kowalski',
+      author_id: '117700000000000000001',
+      author_url: 'https://www.google.com/maps/contrib/117700000000000000001/reviews',
+      author_photo: 'https://lh3.googleusercontent.com/a/dom-1',
+      author_info: 'Local Guide · 12 reviews · 3 photos',
+      rating: 5,
+      text: 'Świetna obsługa',
+      language: 'pl',
+      relative_date: '5 months ago',
+      photos: 'https://lh3.googleusercontent.com/photo-0, https://lh3.googleusercontent.com/photo-1',
+      photos_count: 2,
+      owner_response: 'Dziękujemy!',
+      owner_response_relative_date: '4 months ago',
+    });
+  });
+
+  it('parses a localized rating label', () => {
+    const html = buildReviewMarkup('dom-2').replace('aria-label="5 stars"', 'aria-label="4 gwiazdki"');
+    const review = parseGoogleMapsReviewElement(domRoot(html).querySelector('[data-review-id]')!);
+
+    expect(review?.rating).toBe(4);
+  });
+
+  it('leaves owner response empty when there is none', () => {
+    const review = parseGoogleMapsReviewElement(domRoot(buildReviewMarkup('dom-3')).querySelector('[data-review-id]')!);
+
+    expect(review?.owner_response).toBe('');
+    expect(review?.photos_count).toBe(0);
+  });
+});
+
+describe('parseGoogleMapsReviewElement, clamped review', () => {
+  it('skips the text while the "More" button is still there', () => {
+    const root = domRoot(buildReviewMarkup('dom-4', { clamped: true }));
+    const review = parseGoogleMapsReviewElement(root.querySelector('[data-review-id]')!);
+
+    // Reading it now would store "… More"; the full text arrives later.
+    expect(review?.text).toBe('');
+    expect(review?.review_id).toBe('dom-4');
+  });
+});
+
+describe('parseGoogleMapsReviewsFromDom', () => {
+  it('returns one record per review container, not per data-review-id element', () => {
+    const root = domRoot(buildReviewMarkup('dom-1') + buildReviewMarkup('dom-2'));
+
+    expect(parseGoogleMapsReviewsFromDom(root).map(review => review.review_id)).toEqual(['dom-1', 'dom-2']);
+  });
+});
+
+describe('mergeGoogleMapsReviews with both sources', () => {
+  it('fills empty fields of a DOM review from the network record', () => {
+    const fromDom = parseGoogleMapsReviewElement(
+      domRoot(buildReviewMarkup('shared-1')).querySelector('[data-review-id]')!,
+    ) as IGoogleMapsReview;
+    const fromNetwork = {
+      ...(parseGoogleMapsReview(buildRawReview('x', { withOwner: true })) as IGoogleMapsReview),
+      review_id: 'shared-1',
+    };
+
+    const [merged] = mergeGoogleMapsReviews([fromDom], [fromNetwork]);
+
+    expect(merged.published_at).toBe(fromNetwork.published_at);
+    expect(merged.text_translated).toBe('Great coffee');
+    expect(merged.owner_response).toBe('Dziękujemy!');
+    // The DOM record wins where it already had a value.
+    expect(merged.author_name).toBe('Jan Kowalski');
+    expect(merged.text).toBe('Świetna obsługa');
   });
 });
