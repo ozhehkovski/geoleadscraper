@@ -30,6 +30,8 @@ export interface IGoogleMapsReview {
   photos_count: number;
   owner_response: string;
   owner_response_at: string;
+  /** Relative date as Maps renders it, e.g. "5 months ago" (DOM fallback). */
+  owner_response_relative_date: string;
   review_url: string;
 }
 
@@ -63,6 +65,7 @@ export const GOOGLE_MAPS_REVIEW_FIELDS: (keyof IGoogleMapsReview)[] = [
   'photos_count',
   'owner_response',
   'owner_response_at',
+  'owner_response_relative_date',
   'review_url',
 ];
 
@@ -232,21 +235,151 @@ export const parseGoogleMapsReview = (
     photos_count: photos.length,
     owner_response: str(at(raw, 3, 14, 0, 0)),
     owner_response_at: microsToIso(at(raw, 3, 1)),
+    owner_response_relative_date: str(at(raw, 3, 3)),
     review_url: str(at(raw, 4, 3, 0)),
   };
 };
 
-/** Merge newly parsed reviews into an existing list, de-duplicated by id. */
+/* ------------------------------------------------------------------ *
+ *  DOM fallback
+ *
+ *  Opening a place straight on its Reviews tab makes Maps render the
+ *  first pages without any `batchexecute` call, so intercepting responses
+ *  alone misses them. Reading the rendered list covers that; the network
+ *  data stays richer (exact dates, translations, sub-ratings) and wins
+ *  when both sources describe the same review.
+ * ------------------------------------------------------------------ */
+
+export const REVIEW_ELEMENT_SELECTOR = '[data-review-id]';
+/** "More" button that expands a review clamped by Maps. */
+export const REVIEW_EXPAND_SELECTOR = 'button.w8nwRe';
+
+type DomElement = {
+  tagName: string;
+  getAttribute(name: string): string | null;
+  querySelector(selectors: string): DomElement | null;
+  querySelectorAll(selectors: string): ArrayLike<DomElement>;
+  closest(selectors: string): DomElement | null;
+  parentElement: DomElement | null;
+  textContent: string | null;
+};
+
+const text = (element: DomElement | null): string => (element?.textContent || '').trim();
+
+const attr = (element: DomElement | null, name: string): string => element?.getAttribute(name) || '';
+
+/** Anything that can be queried for review elements — a Document or an Element. */
+type DomRoot = { querySelectorAll(selectors: string): ArrayLike<DomElement> };
+
+/** Review containers only — buttons inside a review repeat `data-review-id`. */
+export const getGoogleMapsReviewElements = (root: DomRoot): DomElement[] =>
+  Array.from(root.querySelectorAll(REVIEW_ELEMENT_SELECTOR)).filter(element => {
+    if (element.tagName !== 'DIV') return false;
+    const parent = element.parentElement;
+    return !parent || !parent.closest(REVIEW_ELEMENT_SELECTOR);
+  });
+
+const parseDomRating = (element: DomElement): number | undefined => {
+  const label = attr(element.querySelector('span[role="img"][aria-label]'), 'aria-label');
+  const match = label.match(/\d+([.,]\d+)?/);
+  return match ? parseFloat(match[0].replace(',', '.')) : undefined;
+};
+
+const parseDomPhotos = (element: DomElement): string[] => {
+  const urls: string[] = [];
+
+  for (const button of Array.from(element.querySelectorAll('button[style*="background-image"]'))) {
+    const url = attr(button, 'style').match(/url\(["']?(https?:[^"')]+)/);
+    if (url) urls.push(url[1]);
+  }
+
+  return urls;
+};
+
+/**
+ * Read one review from the rendered list. Expand clamped reviews first
+ * (see `REVIEW_EXPAND_SELECTOR`), otherwise the text ends in "… More".
+ */
+export const parseGoogleMapsReviewElement = (
+  element: DomElement,
+  place: { placeId?: string; placeName?: string } = {},
+): IGoogleMapsReview | null => {
+  const reviewId = attr(element, 'data-review-id');
+  if (!reviewId) return null;
+
+  const body = element.querySelector('.MyEned');
+  // Still clamped: its text would end in "… More". Leave it empty so the full
+  // text can arrive from the network, or from a later pass once expanded.
+  const clamped = !!element.querySelector(REVIEW_EXPAND_SELECTOR);
+  const owner = element.querySelector('.CDe7pd');
+  const authorUrl = Array.from(element.querySelectorAll('button[data-href]'))
+    .map(button => attr(button, 'data-href'))
+    .find(href => href.includes('/maps/contrib/'));
+  const photos = parseDomPhotos(element);
+
+  return {
+    review_id: reviewId,
+    place_id: place.placeId || '',
+    place_name: place.placeName || '',
+    author_name: text(element.querySelector('.d4r55')),
+    author_id: (authorUrl?.match(/\/maps\/contrib\/(\d+)/) || [])[1] || '',
+    author_url: authorUrl || '',
+    author_photo: attr(element.querySelector('img.NBa7we'), 'src'),
+    author_info: text(element.querySelector('.RfnDt')),
+    rating: parseDomRating(element),
+    text: clamped ? '' : text(body),
+    text_translated: '',
+    language: attr(body, 'lang'),
+    published_at: '',
+    updated_at: '',
+    relative_date: text(element.querySelector('.rsqaWe')),
+    details: '',
+    photos: photos.join(', '),
+    photos_count: photos.length,
+    owner_response: text(owner?.querySelector('.wiI7pd') || null),
+    owner_response_at: '',
+    owner_response_relative_date: text(owner?.querySelector('.DZSIDd') || null),
+    review_url: '',
+  };
+};
+
+/** Read every review currently rendered in the list. */
+export const parseGoogleMapsReviewsFromDom = (
+  root: DomRoot,
+  place: { placeId?: string; placeName?: string } = {},
+): IGoogleMapsReview[] =>
+  getGoogleMapsReviewElements(root)
+    .map(element => parseGoogleMapsReviewElement(element, place))
+    .filter((review): review is IGoogleMapsReview => review !== null);
+
+const isEmptyField = (value: number | string | undefined): boolean =>
+  value === undefined || value === null || value === '' || value === 0;
+
+/**
+ * Merge newly parsed reviews into an existing list, de-duplicated by id.
+ * A review seen twice keeps what it already has and only fills in the
+ * fields that were empty, so a DOM record never overwrites network data.
+ */
 export const mergeGoogleMapsReviews = (
   current: IGoogleMapsReview[],
   incoming: IGoogleMapsReview[],
 ): IGoogleMapsReview[] => {
-  const seen = new Set(current.map(review => review.review_id));
+  const byId = new Map(current.map(review => [review.review_id, review]));
   const merged = [...current];
 
   for (const review of incoming) {
-    if (seen.has(review.review_id)) continue;
-    seen.add(review.review_id);
+    const existing = byId.get(review.review_id);
+
+    if (existing) {
+      for (const field of GOOGLE_MAPS_REVIEW_FIELDS) {
+        if (isEmptyField(existing[field]) && !isEmptyField(review[field])) {
+          (existing[field] as number | string | undefined) = review[field];
+        }
+      }
+      continue;
+    }
+
+    byId.set(review.review_id, review);
     merged.push(review);
   }
 

@@ -1,4 +1,4 @@
-import { sleep } from '@chrome-extension/shared/lib';
+import { REVIEW_EXPAND_SELECTOR, sleep } from '@chrome-extension/shared/lib';
 
 // Google Maps visual-element ids (the numeric prefix of `jslog`) are stable
 // across UI languages, unlike labels. Labels are only a fallback.
@@ -66,6 +66,16 @@ const findScrollContainer = (): HTMLElement | null => {
   }
 
   return null;
+};
+
+/**
+ * Expand reviews Maps clamped with a "More" button — their rendered text
+ * otherwise ends in "… More". Returns how many were expanded.
+ */
+export const expandTruncatedReviews = (): number => {
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(REVIEW_EXPAND_SELECTOR));
+  buttons.forEach(button => button.click());
+  return buttons.length;
 };
 
 /** Scroll the reviews list to the bottom so Maps loads the next page. */
