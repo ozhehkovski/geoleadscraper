@@ -80,7 +80,7 @@ Then in Chrome: open `chrome://extensions` → enable **Developer mode** →
 
 Open Google Maps, search for anything (e.g. *"coffee shops in Berlin"*), click
 **Start extracting**, then **Export** to download your CSV or Excel file. The extension works
-**standalone** — Google Maps scraping and website contact enrichment need no backend and no login.
+**standalone** — Google Maps scraping needs no backend and no login.
 
 To export reviews, open a single place (e.g. click a business in the results),
 click **Extract reviews**, wait until the counter stops, then **Export reviews**.
@@ -88,7 +88,9 @@ The extension opens the Reviews tab and scrolls it for you; you need to be signe
 in to Google, because Maps shows only a limited view without reviews to signed-out users.
 
 ### Website contact enrichment (emails / phones / socials)
-GeoLeadScraper includes a **built-in standalone in-browser crawler** that automatically visits business websites with missing contacts before export. It runs completely client-side in your browser — **no setup, no backend, and no Docker required!** A live progress indicator shows real-time enrichment progress.
+GeoLeadScraper includes an opt-in **built-in standalone in-browser crawler** that visits business websites with missing contacts before export. You can enable it in extension **Settings** ("Enrich missing email / phone"), which asks for permission to access websites at runtime.
+
+It performs a fast, plain HTML fetch client-side in your browser with zero backend setup. Note that because it fetches raw HTML without rendering JavaScript, JS-only (SPA) websites won't yield contacts — for full JavaScript rendering, use the optional Puppeteer backend below. A live progress indicator shows real-time enrichment progress during export.
 
 #### Optional: Puppeteer backend
 For advanced users who prefer headless server-side crawling with JavaScript rendering:
@@ -141,9 +143,7 @@ No paid limit. You can collect the businesses Google Maps returns for a search;
 use a reasonable pace to stay within the platforms' terms of service.
 
 **Can it scrape emails and phone numbers from business websites?**
-Yes! GeoLeadScraper includes a native in-browser crawler that automatically extracts emails,
-phone numbers, and social links from company websites during export — completely client-side
-without needing any backend. An optional self-hosted backend is also supported.
+Yes! You can enable "Enrich missing email / phone" in extension Settings. When enabled, GeoLeadScraper asks for permission to access websites and extracts emails, phone numbers, and social links from company websites during export. It uses plain HTML fetch without JavaScript rendering; for sites that require JavaScript execution, the optional Puppeteer backend can be used.
 
 **Does it work with Yandex Maps and 2GIS too?**
 Yes — the same extension scrapes Google Maps, Yandex Maps and 2GIS.

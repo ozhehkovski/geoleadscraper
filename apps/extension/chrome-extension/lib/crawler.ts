@@ -72,10 +72,19 @@ export function decodeHtmlEntities(str: string): string {
  * (e.g. "info [at] example [dot] com"), preventing false positives like "open at 9 dot 30".
  */
 export function deobfuscate(text: string): string {
-  return text.replace(
-    /\b([a-zA-Z0-9._%+-]+)\s*(?:@|\[at\]|\(at\)|\bat\b)\s*([a-zA-Z0-9.-]+)\s*(?:\.|\(dot\)|\[dot\]|\bdot\b)\s*([a-zA-Z]{2,24})\b/gi,
+  // 1. Bracketed forms: [at], (at), {at} paired with literal dot, bracketed dot, or word dot
+  let result = text.replace(
+    /\b([a-zA-Z0-9._%+-]+)\s*(?:\[at\]|\(at\)|\{at\})\s*([a-zA-Z0-9.-]+)\s*(?:\.|\(dot\)|\[dot\]|\{dot\}|\bdot\b)\s*([a-zA-Z]{2,24})\b/gi,
     '$1@$2.$3',
   );
+
+  // 2. Bare-word "at": only valid if paired with word-form/bracketed "dot", never with a literal dot
+  result = result.replace(
+    /\b([a-zA-Z0-9._%+-]+)\s+\bat\b\s+([a-zA-Z0-9.-]+)\s+(?:\(dot\)|\[dot\]|\{dot\}|\bdot\b)\s+([a-zA-Z]{2,24})\b/gi,
+    '$1@$2.$3',
+  );
+
+  return result;
 }
 
 export function isValidEmail(email: string): boolean {
@@ -156,15 +165,24 @@ export function extractEmailsFromHtml(html: string): string[] {
   return valid;
 }
 
+export function normalizePhone(raw: string): string {
+  const clean = decodeURIComponent(raw).trim().replace(/^tel:/i, '').trim();
+  const hasPlus = clean.startsWith('+');
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 16) return '';
+  if (/^(\d)\1+$/.test(digits)) return '';
+  return hasPlus ? `+${digits}` : digits;
+}
+
 export function extractPhonesFromHtml(html: string): string[] {
   const phones: string[] = [];
 
   // 1. tel: links (highest reliability)
   const telMatches = html.matchAll(/href=["']tel:([^"'\s]+)["']/gi);
   for (const m of telMatches) {
-    const raw = decodeURIComponent(m[1]).trim().replace(/[^\d+]/g, '');
-    if (raw.length >= 7 && raw.length <= 16) {
-      phones.push(raw);
+    const normalized = normalizePhone(m[1]);
+    if (normalized && !phones.includes(normalized)) {
+      phones.push(normalized);
     }
   }
 
@@ -179,9 +197,9 @@ export function extractPhonesFromHtml(html: string): string[] {
         if (typeof node === 'object') {
           for (const [key, val] of Object.entries(node)) {
             if (key.toLowerCase() === 'telephone' && typeof val === 'string') {
-              const cleaned = val.trim().replace(/[^\d+]/g, '');
-              if (cleaned.length >= 7 && cleaned.length <= 16) {
-                phones.push(cleaned);
+              const normalized = normalizePhone(val);
+              if (normalized && !phones.includes(normalized)) {
+                phones.push(normalized);
               }
             } else {
               walk(val);
@@ -192,26 +210,6 @@ export function extractPhonesFromHtml(html: string): string[] {
       walk(parsed);
     } catch {
       // ignore
-    }
-  }
-
-  // 3. Fallback regex on stripped visible text (NOT raw HTML, avoids timestamps/IDs in scripts/tags)
-  const visibleText = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ');
-
-  // Matches international format: +1 234 567 8900, +49 (0)30 123456, 0212 345 67 89, etc.
-  const phonePattern = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{2,4}/g;
-  const matches = visibleText.match(phonePattern) || [];
-  for (const p of matches) {
-    const digitsOnly = p.replace(/\D/g, '');
-    // Genuine phone numbers usually have 7 to 15 digits and aren't repetitive dummy sequences
-    if (digitsOnly.length >= 7 && digitsOnly.length <= 15 && !/^(\d)\1+$/.test(digitsOnly)) {
-      const clean = p.trim().replace(/\s+/g, ' ');
-      if (!phones.includes(clean)) {
-        phones.push(clean);
-      }
     }
   }
 

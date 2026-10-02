@@ -112,6 +112,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
 
   const [loading, setLoading] = useState<boolean>(true);
   const [enrichmentProgress, setEnrichmentProgress] = useState<{ current: number; total: number } | null>(null);
+  const [permissionMissing, setPermissionMissing] = useState<boolean>(false);
 
   const stateRef = useRef(state);
   const controllerRef = useRef<AbortController | null>(null);
@@ -305,6 +306,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
     if (urls.length === 0) return items;
 
     setEnrichmentProgress({ current: 0, total: urls.length });
+    setPermissionMissing(false);
 
     const BATCH_SIZE = 6;
     const allExtractedData: any[] = [];
@@ -313,6 +315,11 @@ const App = ({ platform }: { platform: DataPlatform }) => {
       for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const chunk = urls.slice(i, i + BATCH_SIZE);
         const res: any = await extractWebsiteResults({ urls: chunk });
+        if (res?.permissionMissing) {
+          setPermissionMissing(true);
+          setEnrichmentProgress(null);
+          return items;
+        }
         const list = Array.isArray(res) ? res : (Array.isArray(res?.data) ? res.data : []);
         if (list.length > 0) {
           allExtractedData.push(...list);
@@ -648,6 +655,11 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                         </Stack>
                       )}
                     </div>
+                    {permissionMissing && (
+                      <span className="mt-1 text-xs text-amber-700">
+                        Site access permission missing. Enable &apos;Enrich missing email / phone&apos; in Settings to grant permission.
+                      </span>
+                    )}
                     {!initiated && !state.enrich_missing && state.extract_websites && !backend_available && (
                       <span className="mt-1 text-xs text-amber-700">
                         Start the local backend to also collect website contacts.

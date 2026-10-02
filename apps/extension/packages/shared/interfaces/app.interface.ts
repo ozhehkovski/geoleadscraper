@@ -18,4 +18,5 @@ export interface IExtractWebsiteResult {
     phones?: string[];
   }[];
   results: number;
+  permissionMissing?: boolean;
 }

@@ -8,6 +8,7 @@ import {
   findContactPageUrl,
   isValidEmail,
   normalizeEmail,
+  normalizePhone,
 } from './crawler';
 
 describe('crawler unit tests', () => {
@@ -15,6 +16,16 @@ describe('crawler unit tests', () => {
     it('normalizes uppercase, whitespace, and mailto prefix', () => {
       expect(normalizeEmail('  mailto:Info@Domain.COM  ')).toBe('info@domain.com');
       expect(normalizeEmail('HELLO@TEST.ORG')).toBe('hello@test.org');
+    });
+  });
+
+  describe('normalizePhone', () => {
+    it('normalizes phone strings to unified digits with optional leading +', () => {
+      expect(normalizePhone('+49 30 123456')).toBe('+4930123456');
+      expect(normalizePhone('tel:+4930123456')).toBe('+4930123456');
+      expect(normalizePhone('0212 345 67 89')).toBe('02123456789');
+      expect(normalizePhone('123')).toBe('');
+      expect(normalizePhone('1111111')).toBe('');
     });
   });
 
@@ -30,6 +41,13 @@ describe('crawler unit tests', () => {
     it('does not falsely rewrite plain text sentences like "open at 9 dot 30"', () => {
       const sentence = 'We are open at 9 dot 30 in the morning';
       expect(deobfuscate(sentence)).toBe(sentence);
+    });
+
+    it('does not falsely rewrite ordinary web copy like "Find us at www.acme.com"', () => {
+      expect(deobfuscate('Find us at www.acme.com')).toBe('Find us at www.acme.com');
+      expect(
+        extractEmailsFromHtml('<p>Visit us at shop.de today</p><p>Find us at www.acme.com</p>'),
+      ).toEqual([]);
     });
   });
 
@@ -118,6 +136,17 @@ describe('crawler unit tests', () => {
       expect(phones.length).toBeGreaterThan(0);
       expect(phones).toContain('+442079460991');
       expect(phones).toContain('+12025550143');
+    });
+
+    it('normalizes and deduplicates telephone numbers in different formats', () => {
+      const html = '<a href="tel:+4930123456">+49 30 123456</a>';
+      expect(extractPhonesFromHtml(html)).toEqual(['+4930123456']);
+    });
+
+    it('does not falsely extract tax numbers, registration IDs, copyright years, or IBANs', () => {
+      const html =
+        '<p>USt-IdNr. DE123456789</p><p>HRB 12345678</p><p>© 2010-2024</p><p>IBAN DE89 3704 0044 0532 0130 00</p>';
+      expect(extractPhonesFromHtml(html)).toEqual([]);
     });
   });
 

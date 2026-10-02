@@ -122,6 +122,27 @@ try {
 }
 startPollLoop();
 
+// Reconcile enrich_missing when optional permissions are granted or revoked at runtime
+try {
+  chrome.permissions?.onAdded?.addListener(permissions => {
+    if (permissions.origins?.includes('<all_urls>') || permissions.origins?.some(o => o.includes('*'))) {
+      chrome.storage.local.get('store', ({ store }) => {
+        chrome.storage.local.set({ store: { ...(store || {}), enrich_missing: true } });
+      });
+    }
+  });
+
+  chrome.permissions?.onRemoved?.addListener(permissions => {
+    if (permissions.origins?.includes('<all_urls>') || permissions.origins?.some(o => o.includes('*'))) {
+      chrome.storage.local.get('store', ({ store }) => {
+        chrome.storage.local.set({ store: { ...(store || {}), enrich_missing: false } });
+      });
+    }
+  });
+} catch {
+  // permissions listeners unavailable
+}
+
 /* ------------------------------------------------------------------ */
 
 chrome.runtime.onMessage.addListener(
@@ -281,6 +302,16 @@ const handlers = {
     }
 
     // 2. Standalone in-browser native crawler (zero-setup, universal fallback)
+    const hasPermission = await chrome.permissions?.contains?.({ origins: ['<all_urls>'] });
+    if (!hasPermission) {
+      logger('Native in-browser crawler skipped: <all_urls> permission missing');
+      return {
+        data: [],
+        results: 0,
+        permissionMissing: true,
+      };
+    }
+
     logger('Running in-browser native crawler for URLs', { count: urls.length });
     const result = await crawlWebsitesConcurrently(urls, 6);
     logger('Native in-browser crawler completed', { results: result.results });

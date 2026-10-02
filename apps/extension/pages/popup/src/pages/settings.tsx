@@ -49,6 +49,16 @@ const SettingsGeneralView = () => {
     enrich_missing,
   } = store.state || {};
 
+  useEffect(() => {
+    chrome.permissions?.contains?.({ origins: ['<all_urls>'] })
+      .then(hasPermission => {
+        if (!hasPermission && store.state?.enrich_missing) {
+          store.update(state => ({ ...state, enrich_missing: false }));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const handlers = {
     onFormatChange: (format: string) => {
       store.update(state => ({ ...state, export_format: format }));
@@ -150,7 +160,7 @@ const SettingsExportView = () => {
       <div className="flex flex-col">
         <span className="text-sm">Click to select / unselect what you want to export.</span>
         <p className="mt-1 text-xs text-neutral-500">
-          Email, phone and social links are automatically enriched from business websites before export.
+          Enable &apos;Enrich missing email / phone&apos; in Settings to fill these fields from business websites before export.
         </p>
         <div className="mt-2">
           <ToggleGroup items={items} filter={items => items} onChange={handleSelect} />
