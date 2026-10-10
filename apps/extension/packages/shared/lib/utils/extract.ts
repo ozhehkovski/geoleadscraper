@@ -1206,7 +1206,7 @@ export const extractWebsiteResults = async ({ urls = [] }: { urls: string[] }): 
     }
 
     return data;
-  } catch (e) {
+  } catch {
     return {
       data: [],
       results: 0,

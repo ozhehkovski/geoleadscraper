@@ -189,7 +189,7 @@ window.addEventListener('message', event => {
 
   try {
     message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-  } catch (err) {
+  } catch {
     console.warn('Invalid event data in postMessage:', event.data);
     return;
   }

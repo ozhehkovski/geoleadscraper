@@ -25,3 +25,6 @@ postgres/
 .idea
 .vscode/*
 !.vscode/extensions.json
+
+# release artifacts
+*.zip

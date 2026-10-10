@@ -25,6 +25,8 @@ export interface IContentContextState {
   auto_download: boolean;
   export_format: string;
   export_fields: string[];
+  /** Before export, fill missing email/phone by scraping each business website. */
+  enrich_missing?: boolean;
 }
 
 export interface IContentContext {
@@ -52,6 +54,7 @@ export const ContentContext = createContext<IContentContext>({
     auto_download: false,
     export_format: DATA_EXPORT_FORMATS.CSV,
     export_fields: [],
+    enrich_missing: false,
     request_interval: 5000,
   },
   setContext: () => {},

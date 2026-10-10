@@ -3,6 +3,7 @@ import 'webextension-polyfill';
 import { BACKGROUND_EVENTS } from '@chrome-extension/shared/enums';
 import { type BackgroundMessagePayload, type IBackgroundMessageResponse } from '@chrome-extension/shared';
 import { api, getBackendUrl } from './api';
+import { crawlWebsitesConcurrently } from './crawler';
 
 chrome.runtime.onInstalled.addListener(async () => {
   const manifest = chrome.runtime.getManifest();
@@ -121,6 +122,27 @@ try {
 }
 startPollLoop();
 
+// Reconcile enrich_missing when optional permissions are granted or revoked at runtime
+try {
+  chrome.permissions?.onAdded?.addListener(permissions => {
+    if (permissions.origins?.includes('<all_urls>') || permissions.origins?.some(o => o.includes('*'))) {
+      chrome.storage.local.get('store', ({ store }) => {
+        chrome.storage.local.set({ store: { ...(store || {}), enrich_missing: true } });
+      });
+    }
+  });
+
+  chrome.permissions?.onRemoved?.addListener(permissions => {
+    if (permissions.origins?.includes('<all_urls>') || permissions.origins?.some(o => o.includes('*'))) {
+      chrome.storage.local.get('store', ({ store }) => {
+        chrome.storage.local.set({ store: { ...(store || {}), enrich_missing: false } });
+      });
+    }
+  });
+} catch {
+  // permissions listeners unavailable
+}
+
 /* ------------------------------------------------------------------ */
 
 chrome.runtime.onMessage.addListener(
@@ -229,6 +251,8 @@ const handleBackgroundEvent = ({
   }
 };
 
+let backendStatusCache: { available: boolean; timestamp: number } | null = null;
+
 const handlers = {
   fetchUrl: async ({ url }: { url: string }) => {
     const response = await fetch(url);
@@ -241,19 +265,57 @@ const handlers = {
 
     api.setBaseUrl(url);
     const { error } = await api.health();
-    return { available: !error, url };
+    const available = !error;
+    backendStatusCache = { available, timestamp: Date.now() };
+    return { available, url };
   },
 
   extractWebsites: async ({ urls }: { urls: string[] }) => {
-    const url = await getBackendUrl();
-    if (!url) throw new Error('backend is not configured');
+    // 1. If backend is configured and running, try backend first (Puppeteer)
+    try {
+      const now = Date.now();
+      const isCachedHealthy = backendStatusCache && (now - backendStatusCache.timestamp < 30000) && backendStatusCache.available;
+      const isCachedUnhealthy = backendStatusCache && (now - backendStatusCache.timestamp < 30000) && !backendStatusCache.available;
 
-    api.setBaseUrl(url);
-    const { data, error } = await api.extractWebsites({ urls });
-    if (error || !data) {
-      throw new Error(`${BACKGROUND_EVENTS.EXTRACT_WEBSITES}: failed`);
+      if (!isCachedUnhealthy) {
+        const url = await getBackendUrl();
+        if (url) {
+          api.setBaseUrl(url);
+          let canUseBackend = isCachedHealthy;
+          if (!canUseBackend) {
+            const { error: healthError } = await api.health();
+            canUseBackend = !healthError;
+            backendStatusCache = { available: canUseBackend, timestamp: now };
+          }
+          if (canUseBackend) {
+            const { data, error } = await api.extractWebsites({ urls });
+            if (!error) {
+              logger('Extracted websites via local backend', { count: data?.data?.length || 0 });
+              return data || { data: [], results: 0 };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      backendStatusCache = { available: false, timestamp: Date.now() };
+      logger('Backend extraction unavailable, using native in-browser crawler', { error: (e as Error)?.message });
     }
-    return data;
+
+    // 2. Standalone in-browser native crawler (zero-setup, universal fallback)
+    const hasPermission = await chrome.permissions?.contains?.({ origins: ['<all_urls>'] });
+    if (!hasPermission) {
+      logger('Native in-browser crawler skipped: <all_urls> permission missing');
+      return {
+        data: [],
+        results: 0,
+        permissionMissing: true,
+      };
+    }
+
+    logger('Running in-browser native crawler for URLs', { count: urls.length });
+    const result = await crawlWebsitesConcurrently(urls, 6);
+    logger('Native in-browser crawler completed', { results: result.results });
+    return result;
   },
 
   getGoogleMapsConfig: async (config: any) => {

@@ -114,7 +114,7 @@ export const exportXLSX = ({ filename, data = [], fields = [] }: IExportResultsF
 
   // create a new workbook and add a worksheet
   const workbook = xlsx.utils.book_new();
-  const worksheet = xlsx.utils.json_to_sheet(data);
+  const worksheet = xlsx.utils.json_to_sheet(data, fields.length ? { header: fields } : undefined);
 
   // add the worksheet to the workbook
   xlsx.utils.book_append_sheet(workbook, worksheet, 'Sheet1');

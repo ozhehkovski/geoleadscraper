@@ -12,6 +12,7 @@ const manifest = Object.assign({
   description: '__MSG_extensionDescription__',
   permissions: ['storage', 'activeTab', 'scripting', 'tabs', 'alarms'],
   host_permissions: ['*://*.google.com/*', 'http://localhost/*', 'http://127.0.0.1/*'],
+  optional_host_permissions: ['<all_urls>'],
   options_page: 'options/index.html',
   key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnX7EN8qaI6ajLgmaQZQbOEXOrBeP5FKqaZc7AG8hGDr0BmaHFbFiLNIGyI6g2BNum1OVKAAK5ClsG3MKWUNkvWPJLMVeF2QE61NSD13GFBY9TwpWqPdVU4BUWDRDc/MVj5c6daCGWjP3dCo0BzpA6Tb3t9eqOiloilh2bt+1Lr+9eUMu8ukpXZKrng16KvqQbDeNH3JpaK8ACUapAgXqAHQ5gIjCA1BDjZFsBUlvuMuej5DfmzG+KsKGBes4NKcJEar3XMWkG6ooYUE5rF7M0cJYxVBew4eAMpwy+P7Y5qTnHLfGmgwg3kMKWiSZDqhmgfsPF53bguQC9T8TPkIzFwIDAQAB',
   background: {

@@ -14,6 +14,7 @@ import {
   logger,
   exportResults,
   sleep,
+  extractWebsiteResults,
 } from '@chrome-extension/shared/lib';
 import { Button, Stack, Spinner, AppProvider, Logo } from '@chrome-extension/shared/components';
 import {
@@ -21,7 +22,6 @@ import {
   DATA_EXPORT_BASIC_FIELDS,
   DATA_EXPORT_FIELDS,
   DATA_EXPORT_FORMATS,
-  DATA_EXPORT_PREMIUM_FIELDS,
   DATA_PARSING_MODES,
   DATA_PLATFORMS,
 } from '@chrome-extension/shared/enums';
@@ -105,11 +105,14 @@ const App = ({ platform }: { platform: DataPlatform }) => {
     extract_websites: false,
     request_interval: 0,
     auto_download: false,
+    enrich_missing: false,
     export_format: DATA_EXPORT_FORMATS.CSV,
     export_fields: [],
   });
 
   const [loading, setLoading] = useState<boolean>(true);
+  const [enrichmentProgress, setEnrichmentProgress] = useState<{ current: number; total: number } | null>(null);
+  const [permissionMissing, setPermissionMissing] = useState<boolean>(false);
 
   const stateRef = useRef(state);
   const controllerRef = useRef<AbortController | null>(null);
@@ -121,7 +124,8 @@ const App = ({ platform }: { platform: DataPlatform }) => {
   const styles = getStyles({ platform, position });
 
   const extract = async (options?: { page: number; next: boolean; extractWebsites?: boolean }) => {
-    // Website contact enrichment requires a reachable backend AND selected contact fields.
+    // Website contact enrichment requires a reachable backend AND selected contact fields during extraction.
+    // In-browser standalone enrichment runs cleanly before export (Stage 2) without double-crawling.
     const extractWebsites = !!(state.backend_available && options?.extractWebsites);
     const url = document.location.href;
     const page = options?.page ? options.page : stateRef.current.page;
@@ -254,7 +258,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
 
   const getSettings = async () => {
     const { data } = await sendBackgroundEvent({ type: BACKGROUND_EVENTS.GET_STORE });
-    const { export_format, auto_download, export_fields, request_interval } = data || {};
+    const { export_format, auto_download, export_fields, request_interval, enrich_missing } = data || {};
 
     const extract_websites = ((export_fields as string[]) || []).some(field =>
       [DATA_EXPORT_FIELDS.EMAIL, DATA_EXPORT_FIELDS.PHONES, DATA_EXPORT_FIELDS.SOCIALS].includes(field),
@@ -267,6 +271,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
       auto_download,
       export_fields: Array.isArray(export_fields) ? export_fields : [],
       request_interval,
+      enrich_missing: enrich_missing !== undefined ? enrich_missing : false,
     }));
   };
 
@@ -275,6 +280,96 @@ const App = ({ platform }: { platform: DataPlatform }) => {
     getPlatform();
     await Promise.all([getSettings(), checkBackend()]);
     setLoading(false);
+  };
+
+  const enrichMissingContacts = async (items: any[], fields: string[]): Promise<any[]> => {
+    const wantsEmail = fields.includes(DATA_EXPORT_FIELDS.EMAIL);
+    const wantsPhone = fields.includes(DATA_EXPORT_FIELDS.PHONE);
+    const wantsPhones = fields.includes(DATA_EXPORT_FIELDS.PHONES);
+    const wantsSocials = fields.includes(DATA_EXPORT_FIELDS.SOCIALS);
+
+    if (!wantsEmail && !wantsPhone && !wantsPhones && !wantsSocials) {
+      return items;
+    }
+
+    const targets = (items || []).filter((item: any) => {
+      if (!item?.website) return false;
+      const needsEmail = wantsEmail && !item.email;
+      const needsPhone = wantsPhone && !item.phone;
+      const needsPhones = wantsPhones && !item.phones;
+      const needsSocials = wantsSocials && !item.socials;
+      return needsEmail || needsPhone || needsPhones || needsSocials;
+    });
+    if (targets.length === 0) return items;
+
+    const urls = Array.from(new Set(targets.map((item: any) => item.website.trim()).filter(Boolean)));
+    if (urls.length === 0) return items;
+
+    setEnrichmentProgress({ current: 0, total: urls.length });
+    setPermissionMissing(false);
+
+    const BATCH_SIZE = 6;
+    const allExtractedData: any[] = [];
+
+    try {
+      for (let i = 0; i < urls.length; i += BATCH_SIZE) {
+        const chunk = urls.slice(i, i + BATCH_SIZE);
+        const res: any = await extractWebsiteResults({ urls: chunk });
+        if (res?.permissionMissing) {
+          setPermissionMissing(true);
+          setEnrichmentProgress(null);
+          return items;
+        }
+        const list = Array.isArray(res) ? res : (Array.isArray(res?.data) ? res.data : []);
+        if (list.length > 0) {
+          allExtractedData.push(...list);
+        }
+        const processed = Math.min(i + chunk.length, urls.length);
+        setEnrichmentProgress({ current: processed, total: urls.length });
+      }
+
+      console.log(`[GeoLeadScraper] Finished enrichment crawl. Extracted ${allExtractedData.length} website results.`);
+
+      const normalize = (u: string) =>
+        u ? u.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '') : '';
+
+      const byNormalizedUrl: Record<string, any> = {};
+      for (const r of allExtractedData) {
+        if (r?.url) {
+          const key = normalize(r.url);
+          byNormalizedUrl[key] = r;
+          const hostOnly = key.split('/')[0];
+          if (hostOnly && !byNormalizedUrl[hostOnly]) {
+            byNormalizedUrl[hostOnly] = r;
+          }
+        }
+      }
+
+      const updatedData = (items || []).map(item => {
+        if (!item?.website) return item;
+        const key = normalize(item.website);
+        const hostOnly = key.split('/')[0];
+        const r = byNormalizedUrl[key] || byNormalizedUrl[hostOnly];
+        if (!r) return item;
+
+        return {
+          ...item,
+          email: wantsEmail && !item.email && r.email ? r.email : item.email,
+          phone: wantsPhone && !item.phone && r.phones?.[0] ? r.phones[0] : item.phone,
+          phones: wantsPhones && !item.phones && r.phones?.length ? r.phones.join(', ') : item.phones,
+          socials: wantsSocials && !item.socials && r.socials?.length ? r.socials.join(', ') : item.socials,
+        };
+      });
+
+      setState(prev => ({ ...prev, data: updatedData }));
+      return updatedData;
+    } catch (err) {
+      console.error('[GeoLeadScraper] Website enrichment failed:', err);
+      return items;
+    } finally {
+      await sleep(500);
+      setEnrichmentProgress(null);
+    }
   };
 
   const handlers = {
@@ -333,7 +428,8 @@ const App = ({ platform }: { platform: DataPlatform }) => {
         // Read the current settings at export time so the selected export
         // fields are always up to date (avoids any stale-state mismatch).
         const settings = await sendBackgroundEvent({ type: BACKGROUND_EVENTS.GET_STORE });
-        const store = (settings?.data as { export_format?: string; export_fields?: string[] }) || {};
+        const store =
+          (settings?.data as { export_format?: string; export_fields?: string[]; enrich_missing?: boolean }) || {};
 
         const format = store.export_format || state.export_format || DATA_EXPORT_FORMATS.CSV;
 
@@ -346,14 +442,28 @@ const App = ({ platform }: { platform: DataPlatform }) => {
 
         const prefix = [config.EXPORT_FILE_NAME_PREFIX, platform].join('-');
 
-        // Build each row using ONLY the selected fields, so the CSV columns
-        // exactly match the export configuration.
+        const shouldEnrich =
+          store.enrich_missing !== undefined ? store.enrich_missing : (state.enrich_missing ?? false);
+
+        let exportItems = state.data || [];
+        if (shouldEnrich) {
+          exportItems = await enrichMissingContacts(exportItems, fields);
+        }
+
+        const isTabular = [DATA_EXPORT_FORMATS.CSV, DATA_EXPORT_FORMATS.XLSX].includes(format as any);
+
+        // Build each row using ONLY the selected fields.
+        // For tabular formats (CSV/XLSX), ensure missing fields are populated with empty strings for proper alignment.
+        // For JSON, leave unpopulated fields omitted.
         const data =
-          state.data?.map(item => {
+          exportItems.map(item => {
             const result: { [key: string]: number | string | boolean } = {};
             for (const field of fields) {
-              if (field in (item as object)) {
-                result[field] = (item as Record<string, any>)[field];
+              const val = (item as Record<string, any>)[field];
+              if (val !== undefined && val !== null) {
+                result[field] = val;
+              } else if (isTabular) {
+                result[field] = '';
               }
             }
             return result;
@@ -450,7 +560,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                 <div className="w-full flex flex-col">
                   <div className="w-full flex flex-row justify-between items-center">
                     <Logo size="sm" />
-                    <div>{extracting && <Spinner />}</div>
+                    <div>{(extracting || enrichmentProgress !== null) && <Spinner />}</div>
                   </div>
                   <div className="mt-4 w-full flex flex-col gap-2 text-sm">
                     {extracting ? (
@@ -464,6 +574,33 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                     ) : (
                       <></>
                     )}
+
+                    {/* Live Progress Bar during enrichment */}
+                    {enrichmentProgress !== null && (
+                      <div className="mt-2 w-full flex flex-col gap-1.5 p-2.5 bg-neutral-100 rounded-md border border-neutral-300 shadow-sm">
+                        <div className="flex justify-between items-center text-xs font-semibold text-neutral-800">
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            Enriching contacts...
+                          </span>
+                          <span className="text-emerald-700 font-bold">
+                            {enrichmentProgress.current} / {enrichmentProgress.total} ({Math.round((enrichmentProgress.current / Math.max(1, enrichmentProgress.total)) * 100)}%)
+                          </span>
+                        </div>
+                        <div className="w-full bg-neutral-200 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-emerald-600 h-2 rounded-full transition-all duration-300 ease-out"
+                            style={{
+                              width: `${Math.round((enrichmentProgress.current / Math.max(1, enrichmentProgress.total)) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-[11px] text-neutral-500">
+                          Scanning {enrichmentProgress.total} websites found in {results} places...
+                        </span>
+                      </div>
+                    )}
+
                     <div className="mt-2 flex flex-col">
                       {initiated ? (
                         <Stack>
@@ -482,15 +619,29 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                             </>
                           ) : (
                             <>
-                              <Button variant="secondary" size="sm" onClick={handlers.export}>
-                                Export results ({results})
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={handlers.export}
+                                disabled={enrichmentProgress !== null}>
+                                {enrichmentProgress !== null
+                                  ? `Enriching (${enrichmentProgress.current}/${enrichmentProgress.total})...`
+                                  : `Export results (${results})`}
                               </Button>
                               {platform === DATA_PLATFORMS.GOOGLE_MAPS && !completed && (
-                                <Button variant="secondary" size="sm" onClick={handlers.resume}>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={handlers.resume}
+                                  disabled={enrichmentProgress !== null}>
                                   Resume
                                 </Button>
                               )}
-                              <Button variant="secondary" size="sm" onClick={handlers.reset}>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={handlers.reset}
+                                disabled={enrichmentProgress !== null}>
                                 Reset
                               </Button>
                             </>
@@ -504,7 +655,12 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                         </Stack>
                       )}
                     </div>
-                    {!initiated && state.extract_websites && !backend_available && (
+                    {permissionMissing && (
+                      <span className="mt-1 text-xs text-amber-700">
+                        Site access permission missing. Enable &apos;Enrich missing email / phone&apos; in Settings to grant permission.
+                      </span>
+                    )}
+                    {!initiated && !state.enrich_missing && state.extract_websites && !backend_available && (
                       <span className="mt-1 text-xs text-amber-700">
                         Start the local backend to also collect website contacts.
                       </span>

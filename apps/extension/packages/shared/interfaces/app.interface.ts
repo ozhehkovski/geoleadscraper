@@ -5,6 +5,8 @@ export interface IAppStoreState {
   export_fields: string[];
   /** Optional self-hosted backend used for website contact enrichment. */
   backend_url?: string;
+  /** Before export, fill missing email/phone by scraping each business website. */
+  enrich_missing?: boolean;
 }
 
 export interface IExtractWebsiteResult {
@@ -16,4 +18,5 @@ export interface IExtractWebsiteResult {
     phones?: string[];
   }[];
   results: number;
+  permissionMissing?: boolean;
 }
