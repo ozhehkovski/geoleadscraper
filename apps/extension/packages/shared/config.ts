@@ -1,5 +1,5 @@
 export const config = {
-  APP_VERSION: '1.1.0',
+  APP_VERSION: '1.2.0',
   APP_NAME: 'geoleadscraper',
   EXPORT_FILE_NAME_PREFIX: 'geoleadscraper',
   // Default extraction cap per run (no plans/quotas anymore — everything is free).
