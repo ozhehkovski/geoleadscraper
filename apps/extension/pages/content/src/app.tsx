@@ -662,7 +662,7 @@ const App = ({ platform }: { platform: DataPlatform }) => {
                     )}
                     {!initiated && !state.enrich_missing && state.extract_websites && !backend_available && (
                       <span className="mt-1 text-xs text-amber-700">
-                        Start the local backend to also collect website contacts.
+                        Enable &apos;Enrich missing email / phone&apos; in Settings to collect emails from websites.
                       </span>
                     )}
                   </div>
